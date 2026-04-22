@@ -105,8 +105,15 @@ const API = {
     resultContent.style.flexDirection = 'column';
     resultContent.style.gap = '1rem';
 
-    // Recognized text
-    recognizedText.textContent = data.recognizedText || 'No text could be detected in this image.';
+    // Recognized text — preserve line breaks for multi-line content
+    const rawText = data.recognizedText || 'No text could be detected in this image.';
+    // Safely escape HTML, then convert newlines to <br> for proper multi-line display
+    const escaped = rawText.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    recognizedText.innerHTML = escaped.replace(/\n/g, '<br>');
+    recognizedText.style.whiteSpace = 'pre-wrap';
+    recognizedText.style.lineHeight = '1.8';
+    recognizedText.style.fontFamily = "'Segoe UI', monospace";
+    recognizedText.style.fontSize = '1.05rem';
 
     // Confidence badge
     const conf = (data.confidence || 'medium').toLowerCase();

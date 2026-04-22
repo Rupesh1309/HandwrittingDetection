@@ -139,17 +139,13 @@ const CanvasDrawing = {
   },
 
   getImageData() {
-    return this.canvas.toDataURL('image/png');
+    // Export as JPEG with high quality for better recognition
+    return this.canvas.toDataURL('image/jpeg', 0.95);
   },
 
   isCanvasBlank() {
-    const blank = document.createElement('canvas');
-    blank.width = this.canvas.width;
-    blank.height = this.canvas.height;
-    const bCtx = blank.getContext('2d');
-    bCtx.fillStyle = '#ffffff';
-    bCtx.fillRect(0, 0, blank.width, blank.height);
-    return this.canvas.toDataURL() === blank.toDataURL();
+    // Use the hasDrawn flag for fast, reliable check
+    return !this.hasDrawn;
   },
 
   setTool(tool) {
