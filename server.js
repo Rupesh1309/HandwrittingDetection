@@ -57,21 +57,38 @@ const ML_ERRORS = {
 };
 
 // ─── System Prompt ────────────────────────────────────────────────────────────
-const SYSTEM_PROMPT = `You are an expert handwriting recognition system. Analyze the provided image carefully.
+const SYSTEM_PROMPT = `You are an expert handwriting recognition system specialized in reading ALL types of handwritten content. Analyze the provided image with extreme care.
 
-Instructions:
-1. Transcribe ALL visible handwritten or printed text EXACTLY as written, preserving line breaks and structure
-2. If the image contains drawings or diagrams, describe them in detail
-3. If there are mathematical equations, write them in plain text notation
-4. Rate your confidence level honestly
+CRITICAL INSTRUCTIONS:
+1. Transcribe ALL visible handwritten or printed text EXACTLY as written
+2. PRESERVE the original line-by-line structure — if text appears on multiple lines, output it on multiple lines
+3. Recognize EVERY individual digit, letter, word, and number — even if they are written separately, close together, or in a grid/column layout
+4. For multi-digit numbers (like 123, 4567, 98765), read them as complete numbers, not individual digits
+5. For multiple separate numbers or words on different lines, transcribe EACH line on its own line
+6. If the image contains mathematical equations or expressions, write them in plain text notation (e.g., 2+3=5)
+7. If the image contains drawings or diagrams mixed with text, describe the drawings AND transcribe the text
+8. Do NOT skip any content — even faint, small, or partially visible text should be transcribed
+9. Rate your confidence level honestly based on legibility
+
+Examples of expected output:
+- Single digit "7" → output: 7
+- Multiple digits "1 2 3" → output: 1 2 3
+- Multi-digit number "456" → output: 456  
+- Multiple lines:
+  "Hello
+   World
+   123" → output:
+  Hello
+  World
+  123
 
 Respond EXACTLY in this format (keep the delimiters):
 ---RECOGNIZED_TEXT---
-[Put the full transcribed text here, or a description if it's a drawing]
+[Put the full transcribed text here preserving all line breaks, or a description if it's a drawing]
 ---CONFIDENCE---
 [High/Medium/Low]
 ---ANALYSIS---
-[Brief note: language detected, writing style, legibility, any special symbols]`;
+[Brief note: language detected, writing style, number of lines detected, legibility, any special symbols]`;
 
 // ─── Gemini Vision via REST API (no SDK needed) ───────────────────────────────
 async function callGemini(imageBase64, mimeType, userPrompt) {
@@ -80,12 +97,13 @@ async function callGemini(imageBase64, mimeType, userPrompt) {
 
   // Confirmed available models from the API (in order of preference)
   const models = [
-    'gemini-2.5-flash',
     'gemini-2.0-flash',
+    'gemini-2.5-flash',
     'gemini-2.0-flash-lite',
     'gemini-2.5-flash-lite',
   ];
 
+  let lastError = null;
   for (const model of models) {
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`;
 
@@ -101,25 +119,35 @@ async function callGemini(imageBase64, mimeType, userPrompt) {
               data: imageBase64,
             },
           },
-          { text: SYSTEM_PROMPT + '\n\n' + (userPrompt || 'Recognize and transcribe all handwriting in this image.') },
+          { text: SYSTEM_PROMPT + '\n\n' + (userPrompt || 'Recognize and transcribe ALL handwriting in this image. Include every digit, number, word, and line. Preserve the multi-line structure exactly as written.') },
         ],
       }],
       generationConfig: {
         temperature: 0.1,
-        maxOutputTokens: 2048,
+        maxOutputTokens: 4096,
       },
     };
 
     let r, json;
     try {
+      // Add timeout with AbortController (30 seconds)
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 30000);
+      
       r = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
+        signal: controller.signal,
       });
+      clearTimeout(timeout);
       json = await r.json();
     } catch (netErr) {
       console.log(`[InkMind] Network error on ${model}: ${netErr.message}`);
+      // If it's an abort/timeout, try next model
+      if (netErr.name === 'AbortError') {
+        console.log(`[InkMind] Request to ${model} timed out, trying next...`);
+      }
       continue;
     }
 
@@ -140,15 +168,21 @@ async function callGemini(imageBase64, mimeType, userPrompt) {
     const errMsg  = json?.error?.message || json?.error?.status || r.statusText || '';
     console.log(`[InkMind] ${model} => HTTP ${errCode}: ${errMsg}`);
 
-    if (errCode === 429) throw { code: 'rate_limit' };
+    // Auth errors are fatal — no point trying other models with same key
     if (errCode === 401 || errCode === 403) throw { code: 'auth' };
-    if (errCode === 503 || errCode === 502) throw { code: 'overloaded' };
+    
+    // For rate limits and overload, try the NEXT model before giving up
+    if (errCode === 429 || errCode === 503 || errCode === 502) {
+      console.log(`[InkMind] ${model} is rate-limited/overloaded, trying next model...`);
+      lastError = errCode === 429 ? 'rate_limit' : 'overloaded';
+      continue;
+    }
     // 404 = model not available for this key tier → try next
     // 400 = bad request → try next model
     continue;
   }
 
-  throw { code: 'generic' };
+  throw { code: lastError || 'generic' };
 }
 
 // ─── Parse structured response ────────────────────────────────────────────────
